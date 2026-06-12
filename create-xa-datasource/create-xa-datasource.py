@@ -4,6 +4,7 @@
 # Usage:                                            #
 #   source variables-xa-datasource.sh               #
 #   wlst.sh create-xa-datasource.py [--help|-h]     #
+#   wlst.sh create-xa-datasource.py --dry-run       #
 #####################################################
 
 ######################
@@ -47,6 +48,9 @@ def print_help_message():
 
     Options:
         --help, -h    Show this help message and exit.
+        --dry-run     Build the full configuration in an edit session and run
+                      validate(), then discard it with cancelEdit('y').
+                      Nothing is saved or activated; no data source is created.
 
     Description:
     Creates and configures an XA JDBC DataSource on a WebLogic server.
@@ -64,6 +68,8 @@ def print_help_message():
 
     Note:
         Create and 'source variables-xa-datasource.sh' before running this script.
+        Even in --dry-run mode the script connects to the Admin Server, so valid
+        credentials and connectivity are still required.
     """
 
 #######################################
@@ -144,9 +150,9 @@ def configure_jdbc_driver(paths, jdbc_url, jdbc_service_user_pw):
     cmo.setDriverName('oracle.jdbc.xa.client.OracleXADataSource')
     cmo.setPassword(jdbc_service_user_pw)
 
-#############################################
+############################################
 # The "configure_connection_pool" function #
-#############################################
+############################################
 
 def configure_connection_pool(paths, jdbc_schema_user_name):
     """Configure connection pool parameters."""
@@ -203,6 +209,19 @@ def set_targets(cluster_name):
                      ObjectName))
 
 ############################################
+# The "build_data_source" function         #
+############################################
+
+def build_data_source(env, paths):
+    """Run every configuration step inside the current edit session."""
+    create_jdbc_data_source(paths)
+    configure_jdbc_driver(paths, env['jdbc_url'], env['jdbc_service_user_pw'])
+    configure_connection_pool(paths, env['jdbc_schema_user_name'])
+    set_jdbc_properties(paths, env['jdbc_service_user_name'])
+    configure_global_transactions(paths)
+    set_targets(env['cluster_name'])
+
+############################################
 # The "check_data_source_created" function #
 ############################################
 
@@ -225,11 +244,16 @@ def main():
         print_help_message()
         sys.exit(0)
 
+    dry_run = ('--dry-run' in sys.argv)
+
     env = get_environment_vars()
     paths = build_paths()
 
     connected = 0
     in_edit = 0
+
+    if dry_run:
+        print "DRY-RUN mode: changes will be validated and then discarded."
 
     # try/finally + nested try/except -> compatible with Jython 2.2.1
     try:
@@ -241,21 +265,25 @@ def main():
             startEdit()
             in_edit = 1
 
-            create_jdbc_data_source(paths)
-            configure_jdbc_driver(paths, env['jdbc_url'], env['jdbc_service_user_pw'])
-            configure_connection_pool(paths, env['jdbc_schema_user_name'])
-            set_jdbc_properties(paths, env['jdbc_service_user_name'])
-            configure_global_transactions(paths)
-            set_targets(env['cluster_name'])
+            build_data_source(env, paths)
 
-            save()
-            activate()
-            in_edit = 0  # no edit session left open
-
-            if check_data_source_created():
-                print "OK: data source '%s' created successfully." % DS_NAME
+            if dry_run:
+                # Validate the pending changes, then throw them away.
+                print "DRY-RUN: validating pending changes for '%s'." % DS_NAME
+                validate()
+                cancelEdit('y')
+                in_edit = 0  # no edit session left open
+                print "DRY-RUN OK: changes validated and discarded. " \
+                      "No data source was created."
             else:
-                print "WARNING: could not verify data source '%s'." % DS_NAME
+                save()
+                activate()
+                in_edit = 0  # no edit session left open
+
+                if check_data_source_created():
+                    print "OK: data source '%s' created successfully." % DS_NAME
+                else:
+                    print "WARNING: could not verify data source '%s'." % DS_NAME
 
         except Exception, e:
             print 'ERROR while creating the data source: ' + str(e)

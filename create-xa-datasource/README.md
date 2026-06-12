@@ -77,7 +77,22 @@ export WLST_CLUSTER_NAME='***'
     wlst.sh create-xa-datasource.py
     ```
 
-5. **Help option**:
+5. **Dry-run option** (recommended before the first real run): build and
+   validate the full configuration without persisting anything:
+
+    ```bash
+    wlst.sh create-xa-datasource.py --dry-run
+    ```
+
+   In dry-run mode the script connects, starts an edit session, builds the
+   complete data source configuration and runs `validate()`, then discards the
+   changes with `cancelEdit('y')` instead of `save()` / `activate()`. **Nothing
+   is created.** Because it exercises the real MBean tree, it catches problems a
+   plain syntax check would miss (bad JDBC URL, non-existent cluster, naming
+   conflicts). Note that it still connects to the Admin Server, so valid
+   credentials and connectivity are required.
+
+6. **Help option**:
 
     ```bash
     wlst.sh create-xa-datasource.py --help
@@ -108,14 +123,25 @@ The script is organized into small functions (no classes):
 
 - **set_targets(cluster_name)**: Targets the data source at the specified cluster.
 
-- **check_data_source_created()**: Verifies the data source was created successfully.
+- **check_data_source_created()**: Verifies the data source was created successfully (skipped in dry-run mode, since the resource is discarded).
 
-- **main()**: Orchestrates the steps above. It opens the WebLogic connection and edit session (`connect` / `edit` / `startEdit`), applies the configuration, then `save` / `activate`. On error it cancels the edit session (`cancelEdit`) and always `disconnect`s in a `finally` block, so the edit lock is never left dangling.
+- **main()**: Orchestrates the steps above. It opens the WebLogic connection and edit session (`connect` / `edit` / `startEdit`), applies the configuration, then either:
+  - **normal mode**: `save` / `activate` and verify the result, or
+  - **`--dry-run` mode**: `validate` the pending changes and `cancelEdit` them, persisting nothing.
+
+  On error it cancels the edit session (`cancelEdit`) and always `disconnect`s in a `finally` block, so the edit lock is never left dangling.
+
+## Command-line Options
+
+| Option        | Effect                                                                 |
+|---------------|------------------------------------------------------------------------|
+| `--help`, `-h`| Show usage information and the required environment variables, then exit. |
+| `--dry-run`   | Build and `validate()` the configuration in an edit session, then `cancelEdit('y')`. Nothing is saved or activated; no data source is created. |
 
 ## Troubleshooting
 
 - **Missing variable errors**: re-source `variables-xa-datasource.sh`; the script lists exactly which variables are unset or empty.
-- **Database connection errors**: verify `DB_JDBC_URL`, the service username and password.
+- **Database connection errors**: verify `DB_JDBC_URL`, the service username and password. Running with `--dry-run` first is a quick way to surface these before any change is persisted.
 - **SSL / handshake errors on `t3s://`**: check the WLST trust store configuration — this is outside the script.
 - **Edit lock held by another session**: an earlier run that crashed mid-edit may have left a lock; the current version releases it automatically via `cancelEdit` on failure, but a lock from an older run may need to be released manually in the WebLogic console.
 - Ensure the WebLogic server is running and reachable at the provided URL.
