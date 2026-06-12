@@ -5,6 +5,7 @@
 #   source variables-xa-datasource.sh               #
 #   wlst.sh create-xa-datasource.py [--help|-h]     #
 #   wlst.sh create-xa-datasource.py --dry-run       #
+#   wlst.sh create-xa-datasource.py --debug         #
 #####################################################
 
 ######################
@@ -13,6 +14,7 @@
 
 import os
 import sys
+import time
 import jarray
 from java.lang import String
 from javax.management import ObjectName
@@ -37,6 +39,22 @@ REQUIRED_VARS = [
     'WLST_CLUSTER_NAME',
 ]
 
+#################
+# Logging setup #
+#################
+# Jython 2.2.1 has no 'logging' module, so we use a tiny leveled logger.
+# Lower number = more verbose. Override with the WLST_LOG_LEVEL env var
+# (DEBUG|INFO|WARNING|ERROR) or with the --debug flag.
+
+LOG_LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40}
+LOG_LEVEL = 'INFO'
+
+def log(level, message):
+    """Print a timestamped message if 'level' meets the current threshold."""
+    if LOG_LEVELS.get(level, 20) >= LOG_LEVELS.get(LOG_LEVEL, 20):
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        print '%s [%-7s] %s' % (ts, level, message)
+
 #####################################
 # The "print_help_message" function #
 #####################################
@@ -51,6 +69,7 @@ def print_help_message():
         --dry-run     Build the full configuration in an edit session and run
                       validate(), then discard it with cancelEdit('y').
                       Nothing is saved or activated; no data source is created.
+        --debug       Set the log level to DEBUG (most verbose).
 
     Description:
     Creates and configures an XA JDBC DataSource on a WebLogic server.
@@ -65,6 +84,9 @@ def print_help_message():
         - DB_JDBC_SERVICE_USER_PW   : service password for the DB
         - DB_JDBC_SCHEMA_USER_NAME  : schema name (CURRENT_SCHEMA)
         - WLST_CLUSTER_NAME         : target WebLogic cluster name
+
+    Optional Environment Variables:
+        - WLST_LOG_LEVEL            : DEBUG | INFO | WARNING | ERROR (default INFO)
 
     Note:
         Create and 'source variables-xa-datasource.sh' before running this script.
@@ -84,10 +106,10 @@ def get_environment_vars():
             missing.append(name)
 
     if missing:
-        print 'ERROR: missing required environment variables:'
+        log('ERROR', 'Missing required environment variables:')
         for name in missing:
-            print '  - ' + name
-        print "Run 'source variables-xa-datasource.sh' before this script."
+            log('ERROR', '  - ' + name)
+        log('ERROR', "Run 'source variables-xa-datasource.sh' before this script.")
         sys.exit(1)
 
     return {
@@ -214,11 +236,22 @@ def set_targets(cluster_name):
 
 def build_data_source(env, paths):
     """Run every configuration step inside the current edit session."""
+    log('INFO', "Creating JDBC system resource '%s'." % DS_NAME)
     create_jdbc_data_source(paths)
+
+    log('INFO', 'Configuring Oracle XA JDBC driver.')
     configure_jdbc_driver(paths, env['jdbc_url'], env['jdbc_service_user_pw'])
+
+    log('INFO', 'Configuring connection pool (init=15, min=15, max=60).')
     configure_connection_pool(paths, env['jdbc_schema_user_name'])
+
+    log('INFO', 'Setting driver properties (user, CHARSET).')
     set_jdbc_properties(paths, env['jdbc_service_user_name'])
+
+    log('INFO', 'Configuring global transactions (TwoPhaseCommit, XA).')
     configure_global_transactions(paths)
+
+    log('INFO', "Targeting cluster '%s'." % env['cluster_name'])
     set_targets(env['cluster_name'])
 
 ############################################
@@ -231,7 +264,7 @@ def check_data_source_created():
         cd('/JDBCSystemResources/%s' % DS_NAME)
         return cmo.getName() == DS_NAME
     except Exception, e:
-        print 'Error checking data source: ' + str(e)
+        log('ERROR', 'Error checking data source: ' + str(e))
         return False
 
 #######################
@@ -240,61 +273,77 @@ def check_data_source_created():
 
 def main():
     """Create and configure the XA DataSource, with cleanup on failure."""
+    global LOG_LEVEL
+
     if '--help' in sys.argv or '-h' in sys.argv:
         print_help_message()
         sys.exit(0)
+
+    # Resolve log level: env var first, then --debug flag wins.
+    env_level = os.environ.get('WLST_LOG_LEVEL', '')
+    if env_level in LOG_LEVELS:
+        LOG_LEVEL = env_level
+    if '--debug' in sys.argv:
+        LOG_LEVEL = 'DEBUG'
 
     dry_run = ('--dry-run' in sys.argv)
 
     env = get_environment_vars()
     paths = build_paths()
 
+    log('DEBUG', 'Resolved MBean paths: ' + str(paths))
+
     connected = 0
     in_edit = 0
 
     if dry_run:
-        print "DRY-RUN mode: changes will be validated and then discarded."
+        log('INFO', 'DRY-RUN mode: changes will be validated and then discarded.')
 
     # try/finally + nested try/except -> compatible with Jython 2.2.1
     try:
         try:
+            log('INFO', "Connecting to '%s'." % env['url'])
             connect(env['user'], env['pw'], env['url'])
             connected = 1
 
             edit()
             startEdit()
             in_edit = 1
+            log('DEBUG', 'Edit session started.')
 
             build_data_source(env, paths)
 
             if dry_run:
                 # Validate the pending changes, then throw them away.
-                print "DRY-RUN: validating pending changes for '%s'." % DS_NAME
+                log('INFO', "Validating pending changes for '%s'." % DS_NAME)
                 validate()
                 cancelEdit('y')
                 in_edit = 0  # no edit session left open
-                print "DRY-RUN OK: changes validated and discarded. " \
-                      "No data source was created."
+                log('INFO', 'DRY-RUN OK: changes validated and discarded. '
+                            'No data source was created.')
             else:
+                log('INFO', 'Saving and activating changes.')
                 save()
                 activate()
                 in_edit = 0  # no edit session left open
 
                 if check_data_source_created():
-                    print "OK: data source '%s' created successfully." % DS_NAME
+                    log('INFO', "Data source '%s' created successfully." % DS_NAME)
                 else:
-                    print "WARNING: could not verify data source '%s'." % DS_NAME
+                    log('WARNING', "Could not verify data source '%s'." % DS_NAME)
 
         except Exception, e:
-            print 'ERROR while creating the data source: ' + str(e)
+            log('ERROR', 'Failed while creating the data source: ' + str(e))
             if in_edit:
                 try:
                     cancelEdit('y')
+                    log('INFO', 'Edit session cancelled.')
                 except Exception, ce:
-                    print 'Could not cancel the edit session: ' + str(ce)
+                    log('ERROR', 'Could not cancel the edit session: ' + str(ce))
             sys.exit(1)
     finally:
         if connected:
+            log('DEBUG', 'Disconnecting.')
             disconnect()
 
 # Execute the script
