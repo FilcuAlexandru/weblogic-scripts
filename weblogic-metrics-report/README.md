@@ -2,7 +2,7 @@
 
 ## Overview
 
-This Python script, `weblogic-metrics-report.py`, is designed to monitor the health and performance metrics of WebLogic servers in production environments. It retrieves and displays critical metrics from the WebLogic Console, including server status, DataSource performance, thread pool statistics, JMS server metrics, JVM heap usage, and deployment status. The script is particularly useful for automated daily health checks, such as morning assessments, to ensure the stability of WebLogic-based systems.
+This Python script, `weblogic-metrics-report.py`, is designed to monitor the health and performance metrics of WebLogic servers. It retrieves and displays critical metrics from the WebLogic Console, including server status, DataSource performance, thread pool statistics, JMS server metrics, JVM heap usage, and deployment status. The script is particularly useful for automated daily health checks, such as morning assessments, to ensure the stability of WebLogic-based systems.
 
 - **Author**: Filcu Alexandru
 - **Version**: 0.1
